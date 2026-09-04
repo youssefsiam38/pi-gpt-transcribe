@@ -92,6 +92,10 @@ export class DictationPipeline {
 	private settled: boolean[] = [];
 	/** Every request started so far. Awaiting them all is the commit drain. */
 	private tasks: Promise<void>[] = [];
+	/** Most recent request failure, kept on the pipeline itself: the error
+	 *  callback is suppressed once the overlay is detached, and the commit
+	 *  path still needs to tell the user what actually went wrong. */
+	private lastFailure: string | undefined;
 	/** Requests currently in flight, against MAX_CONCURRENT_REQUESTS. */
 	private active = 0;
 	private waiters: Array<() => void> = [];
@@ -136,6 +140,10 @@ export class DictationPipeline {
 	 *  to wait for. */
 	get pendingCount(): number {
 		return this.pending;
+	}
+
+	get lastError(): string | undefined {
+		return this.lastFailure;
 	}
 
 	/**
@@ -327,7 +335,8 @@ export class DictationPipeline {
 			if (!this.signal.aborted) {
 				debugLog("request", `slot ${slot} failed in ${Date.now() - startedAt}ms: ${describeError(error)}`);
 				appendErrorLog("transcribe", error);
-				this.notify(() => this.callbacks.onError(describeError(error)));
+				this.lastFailure = describeError(error);
+				this.notify(() => this.callbacks.onError(this.lastFailure ?? ""));
 			}
 		} finally {
 			// Settle before rendering: a failed slot must stop blocking the

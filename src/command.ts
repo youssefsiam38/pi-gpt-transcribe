@@ -120,6 +120,9 @@ export async function runDictation(ctx: ExtensionContext, registered: Transcribe
 
 	let pipeline: DictationPipeline | undefined;
 	let ticker: ReturnType<typeof setInterval> | undefined;
+	// Captured from the overlay factory: the app's TUI, which outlives the
+	// overlay. Needed after the paste — see the comment there.
+	let requestRender: (() => void) | undefined;
 
 	const intent = await ctx.ui.custom<OverlayIntent>((tui, theme, keybindings, done) => {
 		const overlay = new DictationOverlay(theme, keybindings, tui.terminal, {
@@ -129,6 +132,8 @@ export async function runDictation(ctx: ExtensionContext, registered: Transcribe
 				pipeline?.setPaused(state.paused);
 			},
 		});
+
+		requestRender = () => tui.requestRender();
 
 		const refresh = (): void => {
 			state.elapsedMs = Date.now() - startedAt;
@@ -202,14 +207,27 @@ export async function runDictation(ctx: ExtensionContext, registered: Transcribe
 
 	if (transcript !== "") {
 		ctx.ui.pasteToEditor(transcript);
+		// pasteToEditor writes straight into the editor component and bypasses
+		// the TUI's input path, which is the only thing that schedules a repaint
+		// after a keystroke. The overlay's own teardown repaints before this
+		// code runs, so without an explicit request the screen keeps showing
+		// an empty prompt while the editor already holds the text — and the
+		// next Enter submits words the user never saw. An earlier version only
+		// repainted by accident, via the setStatus() call after the drain.
+		requestRender?.();
 		return;
 	}
 	// Never end silently. An empty result with nothing said about it is
 	// indistinguishable from the command not having run, and it hides exactly
 	// the failures worth reporting — every segment judged silent, or every
 	// request failing.
-	if (state.error) {
-		ctx.ui.notify(`Nothing transcribed — ${state.error}. See ${LOG_PATH}`, "error");
+	// Read the failure off the pipeline, not the overlay state: the overlay
+	// was detached before the final drain, so an error in that last request
+	// never reached `state.error`, and the user was told "no speech detected"
+	// when the truth was a 401 or a 500.
+	const failure = pipeline?.lastError ?? state.error;
+	if (failure) {
+		ctx.ui.notify(`Nothing transcribed — ${failure}. See ${LOG_PATH}`, "error");
 	} else {
 		ctx.ui.notify(
 			`Nothing transcribed — no speech was detected. Set "debug": true in ${CONFIG_PATH} to trace why.`,
