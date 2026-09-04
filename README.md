@@ -56,10 +56,10 @@ word before it reaches the model.
   keymaps leave unclaimed. Rebind it, or turn it off, in the config file.
 - **Domain vocabulary** — `prompt`, `keywords` and `languages` are passed through to
   `gpt-transcribe`, so project names and jargon come back spelled right.
-- **`Enter` does not wait on a backlog** — nothing is ever transcribed twice, and the
-  trailing buffer is checked for speech before it is sent, so ending on a pause costs no
-  request and no wait at all. Press `Enter` mid-sentence and only that tail is
-  outstanding.
+- **`Enter` is instant when there is nothing left to do** — nothing is ever transcribed
+  twice. If every phrase you spoke is already on screen, the text pastes with no request,
+  no status and no wait. You only ever wait for a phrase you finished too recently for it
+  to have been sent.
 - **Failures stay out of your transcript** — a request that errors is retried, then logged
   to a file rather than printed into the overlay. The rest of the dictation is unaffected.
 - **No SDK** — the only runtime dependency is the audio capture library. The API call is
@@ -92,7 +92,8 @@ a default, create `~/.config/pi-gpt-transcribe/config.json`:
 | `minSegmentSeconds` | `0.35` | Drop segments shorter than this — they are clicks, not speech |
 | `vadThreshold` | `0.5` | Speech probability above which audio counts as speech (`0`–`1`) |
 | `silenceHoldoffMs` | `500` | Quiet time that ends a phrase |
-| `speechFloor` | `0.005` | Peak level below which a segment is silence and is never sent |
+| `speechFloor` | `0.005` | Level gate, used only if the voice detector never fires at all |
+| `debug` | `false` | Write a decision trace to `~/.config/pi-gpt-transcribe/debug.log` |
 
 The hotkey binds at load, so changing it needs a `/reload`. Every other key is re-read on
 each `/transcribe`.
@@ -121,6 +122,10 @@ Pi already holds for its own `openai` provider.
 - **`/transcribe` is not found** — restart your Pi session after installing.
 - **Pi exits with `ERR_INVALID_STATE: ReadableStream is already closed`** — fixed in
   0.1.1. Update with `pi update git:github.com/youssefsiam38/pi-gpt-transcribe`.
+- **`Enter` still waits when you were silent at the end** — set `"debug": true` in the
+  config file and dictate once. `~/.config/pi-gpt-transcribe/debug.log` records every
+  voice-detector transition, each segment with the reason it was cut and whether it was
+  sent or dropped, and how long the commit waited.
 - **A phrase silently failed to transcribe** — errors go to
   `~/.config/pi-gpt-transcribe/errors.log`, not to the terminal, because stderr would
   corrupt the live overlay. The underlying HTTP status and message are there.

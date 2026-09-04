@@ -10,7 +10,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { KeyId } from "@earendil-works/pi-tui";
 import { CONFIG_PATH, loadConfig, resolveApiKey, type TranscribeConfig } from "./config.js";
-import { appendErrorLog, describeError, LOG_PATH } from "./log.js";
+import { appendErrorLog, debugLog, describeError, LOG_PATH, setDebugEnabled } from "./log.js";
 import { openMic } from "./mic.js";
 import { DictationOverlay, type OverlayIntent, type OverlayState } from "./overlay.js";
 import { DictationPipeline } from "./pipeline.js";
@@ -85,6 +85,7 @@ export async function runDictation(ctx: ExtensionContext, registered: Transcribe
 	}
 
 	const config = currentConfig(registered);
+	setDebugEnabled(config.debug);
 	const apiKey = await resolveKey(ctx, config);
 	if (!apiKey) {
 		ctx.ui.notify(
@@ -176,13 +177,27 @@ export async function runDictation(ctx: ExtensionContext, registered: Transcribe
 
 	// Stop happens before abort on this path — the final segment's request is
 	// the one whose result the user is waiting for.
-	ctx.ui.setStatus(STATUS_KEY, "transcribing…");
 	let transcript = "";
-	try {
-		transcript = await pipeline!.drain(DRAIN_TIMEOUT_MS);
-	} finally {
-		ctx.ui.setStatus(STATUS_KEY, undefined);
+	const outstanding = pipeline?.pendingCount ?? 0;
+	debugLog("commit", `pending at Enter: ${outstanding}`);
+	if (outstanding === 0) {
+		// Everything spoken is already transcribed and on screen. Paste it and
+		// get out: no status, no drain, no wait. Showing "transcribing…" here
+		// regardless of whether anything was in flight is what made ending on a
+		// pause look like it was re-transcribing text the user could already
+		// read.
+		transcript = pipeline?.transcript ?? "";
 		controller.abort();
+	} else {
+		ctx.ui.setStatus(STATUS_KEY, `transcribing ${outstanding === 1 ? "final phrase" : `${outstanding} phrases`}…`);
+		const startedAt = Date.now();
+		try {
+			transcript = await pipeline!.drain(DRAIN_TIMEOUT_MS);
+		} finally {
+			debugLog("commit", `drained in ${Date.now() - startedAt}ms`);
+			ctx.ui.setStatus(STATUS_KEY, undefined);
+			controller.abort();
+		}
 	}
 
 	if (transcript !== "") {

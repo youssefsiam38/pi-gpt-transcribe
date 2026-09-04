@@ -20,7 +20,7 @@
  */
 
 import type { TranscribeConfig } from "./config.js";
-import { appendErrorLog, describeError } from "./log.js";
+import { appendErrorLog, debugLog, describeError } from "./log.js";
 import { BYTES_PER_SAMPLE, type MicStream, SAMPLE_RATE } from "./mic.js";
 import { transcribe } from "./openai.js";
 import { encodeWav, rmsInt16 } from "./wav.js";
@@ -42,6 +42,9 @@ export interface PipelineCallbacks {
  *  requests-per-minute tier-1 limit. */
 const MAX_CONCURRENT_REQUESTS = 4;
 
+/** Why a segment was closed. Only `max` continues an utterance. */
+type FlushReason = "silence" | "max" | "pause" | "stop";
+
 function secondsToBytes(seconds: number): number {
 	return Math.round(seconds * SAMPLE_RATE) * BYTES_PER_SAMPLE;
 }
@@ -51,7 +54,12 @@ export class DictationPipeline {
 	private readonly minSegmentBytes: number;
 	private chunks: Buffer[] = [];
 	private segmentBytes = 0;
-	/** Set by the VAD's `speech` event for the segment being accumulated. */
+	/** Live VAD state: between a `speech` event and its matching `silence`. */
+	private inSpeech = false;
+	/** Whether the VAD has fired even once. If it never does, its verdict is
+	 *  worthless and the level heuristic takes over for the whole session. */
+	private everSawSpeech = false;
+	/** Whether the segment being accumulated contains VAD-confirmed speech. */
 	private segmentSawSpeech = false;
 	/** Loudest chunk in the segment being accumulated. */
 	private segmentPeak = 0;
@@ -83,9 +91,16 @@ export class DictationPipeline {
 	start(): void {
 		this.mic.on("data", (chunk) => this.onChunk(chunk));
 		this.mic.on("speech", () => {
+			this.inSpeech = true;
+			this.everSawSpeech = true;
 			this.segmentSawSpeech = true;
+			debugLog("vad", "speech");
 		});
-		this.mic.on("silence", () => this.flush());
+		this.mic.on("silence", () => {
+			this.inSpeech = false;
+			debugLog("vad", "silence");
+			this.flush("silence");
+		});
 		this.mic.once("error", (error) => {
 			appendErrorLog("mic", error ?? new Error("microphone error"));
 			this.notify(() => this.callbacks.onError(`Microphone error: ${describeError(error)}`));
@@ -97,6 +112,12 @@ export class DictationPipeline {
 	 *  ones whose request failed; dropping them avoids double spaces. */
 	get transcript(): string {
 		return this.parts.filter((part) => part !== "").join(" ");
+	}
+
+	/** Segments captured but not yet transcribed. Zero means Enter has nothing
+	 *  to wait for. */
+	get pendingCount(): number {
+		return this.pending;
 	}
 
 	/**
@@ -122,7 +143,7 @@ export class DictationPipeline {
 		// Close the open segment on the way into a pause so the words already
 		// spoken are transcribed now rather than getting glued to whatever is
 		// said after the resume.
-		if (paused) this.flush();
+		if (paused) this.flush("pause");
 	}
 
 	/**
@@ -139,7 +160,7 @@ export class DictationPipeline {
 	stop(): void {
 		if (this.stopped) return;
 		this.stopped = true;
-		this.flush();
+		this.flush("stop");
 		try {
 			this.mic.stop();
 		} catch (error) {
@@ -192,38 +213,46 @@ export class DictationPipeline {
 		if (level > this.segmentPeak) this.segmentPeak = level;
 		// A monologue with no breath pause would otherwise buffer forever and
 		// show nothing. Cut it and let the next chunk start a fresh segment.
-		if (this.segmentBytes >= this.maxSegmentBytes) this.flush();
+		if (this.segmentBytes >= this.maxSegmentBytes) this.flush("max");
 	}
 
-	private flush(): void {
+	private flush(reason: FlushReason): void {
 		if (this.chunks.length === 0) return;
 		const pcm = Buffer.concat(this.chunks);
 		const sawSpeech = this.segmentSawSpeech;
 		const peak = this.segmentPeak;
+		const seconds = pcm.length / (SAMPLE_RATE * BYTES_PER_SAMPLE);
 		this.chunks = [];
 		this.segmentBytes = 0;
-		this.segmentSawSpeech = false;
 		this.segmentPeak = 0;
+		// A length cut lands mid-utterance, so the segment it opens continues
+		// the same speech run and inherits the flag. Every other reason ends the
+		// run — after a `silence` the next audio is room tone until the detector
+		// says otherwise.
+		this.segmentSawSpeech = reason === "max" ? this.inSpeech : false;
 
-		// Sub-threshold segments are door clicks and keyboard clacks the VAD
-		// briefly called speech. Sending one costs a request and returns an
-		// invented word.
-		if (pcm.length < this.minSegmentBytes) return;
+		const drop = (why: string): void => {
+			debugLog("flush", `${reason} ${seconds.toFixed(2)}s dropped (${why})`);
+		};
 
-		// Two independent reasons to believe there are words in here, because
-		// neither alone is enough. The VAD's own verdict is the better signal,
-		// but it does not survive a `maxSegmentSeconds` cut: that starts a fresh
-		// segment mid-monologue with no new `speech` transition to observe, so
-		// the level check is what carries the rest of a long dictation. The
-		// level check alone would be a crude gate on a quiet speaker.
-		//
-		// This is what makes Enter feel instant after a pause. The VAD has
-		// already flushed your last phrase by then and the buffer holds nothing
-		// but room tone, so the final flush drops it and there is no request to
-		// wait on. Press Enter mid-sentence and the tail does hold speech — that
-		// one still goes, and the wait is real work, not a re-run.
-		if (!sawSpeech && peak < this.config.speechFloor) return;
+		if (pcm.length < this.minSegmentBytes) {
+			drop("shorter than minSegmentSeconds");
+			return;
+		}
 
+		// The detector's verdict decides. It is the only thing that reliably
+		// separates "you stopped talking a moment ago" from "you are still
+		// talking", and getting that wrong is what put a request of pure room
+		// tone in front of every Enter. The level check is a fallback for a
+		// session where the detector never fired at all, where a crude gate
+		// beats no gate.
+		const hasSpeech = this.everSawSpeech ? sawSpeech : peak >= this.config.speechFloor;
+		if (!hasSpeech) {
+			drop(this.everSawSpeech ? "no speech detected in segment" : `peak ${peak.toFixed(4)} below floor`);
+			return;
+		}
+
+		debugLog("flush", `${reason} ${seconds.toFixed(2)}s sent (peak ${peak.toFixed(4)})`);
 		this.enqueue(pcm);
 	}
 
@@ -242,6 +271,7 @@ export class DictationPipeline {
 	/** Never rejects: every failure is logged and the slot settles empty, so
 	 *  one bad segment cannot take down the drain or the process. */
 	private async run(slot: number, pcm: Buffer): Promise<void> {
+		const startedAt = Date.now();
 		try {
 			await this.acquire();
 			try {
@@ -256,11 +286,13 @@ export class DictationPipeline {
 					signal: this.signal,
 				});
 				this.parts[slot] = text.trim();
+				debugLog("request", `slot ${slot} ok in ${Date.now() - startedAt}ms`);
 			} finally {
 				this.release();
 			}
 		} catch (error) {
 			if (!this.signal.aborted) {
+				debugLog("request", `slot ${slot} failed in ${Date.now() - startedAt}ms: ${describeError(error)}`);
 				appendErrorLog("transcribe", error);
 				this.notify(() => this.callbacks.onError(describeError(error)));
 			}

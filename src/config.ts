@@ -49,8 +49,12 @@ export const DEFAULT_VAD_THRESHOLD = 0.5;
 
 /**
  * Peak level below which a segment is treated as silence and never sent.
- * Normalized RMS, so 0.005 is about -46 dBFS: comfortably under quiet speech
- * (roughly -40 dBFS) and well over typical room tone (under -55 dBFS).
+ *
+ * Only consulted when the voice-activity detector never fired at all for a
+ * session — a level threshold is a poor judge of speech, and this one was
+ * letting silent tails through: room tone, a breath, or the keystroke that
+ * ends the recording all clear -46 dBFS on a mic with any gain on it. The
+ * detector's own verdict decides in every normal session.
  */
 export const DEFAULT_SPEECH_FLOOR = 0.005;
 
@@ -81,6 +85,8 @@ export interface TranscribeConfig {
 	readonly vadThreshold: number;
 	readonly silenceHoldoffMs: number;
 	readonly speechFloor: number;
+	/** Write a decision trace to `debug.log`. */
+	readonly debug: boolean;
 }
 
 /** Values that disable the hotkey. Mirrors the spellings people actually try. */
@@ -133,6 +139,7 @@ export function loadConfig(): TranscribeConfig {
 		vadThreshold: num(raw.vadThreshold, DEFAULT_VAD_THRESHOLD, 0, 1),
 		silenceHoldoffMs: num(raw.silenceHoldoffMs, DEFAULT_SILENCE_HOLDOFF_MS, 0, 5000),
 		speechFloor: num(raw.speechFloor, DEFAULT_SPEECH_FLOOR, 0, 1),
+		debug: raw.debug === true,
 	};
 }
 
