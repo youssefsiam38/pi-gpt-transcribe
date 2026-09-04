@@ -33,8 +33,9 @@ endpoint needs a key from [platform.openai.com/api-keys](https://platform.openai
 export OPENAI_API_KEY=sk-...
 ```
 
-Then press `Ctrl-Q`, or type `/transcribe`, and talk. A one-line indicator appears above the
-prompt — `● 0:14 ▂▅▇▃` — and each phrase lands in the prompt a beat after you pause. Keep
+Then press `Ctrl-Q`, or type `/transcribe`, and talk. A live waveform appears above the
+prompt with a status row under it — `● 0:14  ⠹ transcribing…  3 phrases` — and each phrase
+lands in the prompt a beat after you pause. Keep
 typing while you talk: voice and keyboard share one cursor.
 
 | Action | Effect |

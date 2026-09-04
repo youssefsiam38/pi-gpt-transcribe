@@ -1,6 +1,6 @@
 {
 	"name": "pi-gpt-transcribe",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"private": false,
 	"description": "Pi extension. Toggle dictation with /transcribe or Ctrl-Q — OpenAI gpt-transcribe inserts each phrase into the prompt while you keep typing.",
 	"keywords": [

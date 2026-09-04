@@ -154,7 +154,7 @@ async function start(ctx: ExtensionContext, registered: TranscribeConfig): Promi
 	}
 
 	const controller = new AbortController();
-	const state: WidgetState = { level: 0, pending: 0, error: undefined, startedAt: Date.now() };
+	const state: WidgetState = { level: 0, pending: 0, inserted: 0, error: undefined, startedAt: Date.now() };
 	const current: Session = {
 		ui: ctx.ui,
 		controller,
@@ -169,7 +169,10 @@ async function start(ctx: ExtensionContext, registered: TranscribeConfig): Promi
 				// Deliveries arrive in spoken order (the pipeline holds later
 				// phrases until earlier ones settle), so inserting each at the
 				// cursor as it lands keeps the prompt in the order it was said.
-				if (current.inserting) insert(ctx, current.tui, text);
+				if (current.inserting) {
+					insert(ctx, current.tui, text);
+					state.inserted += 1;
+				}
 			},
 			onPending: (count) => {
 				state.pending = count;
