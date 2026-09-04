@@ -1,0 +1,41 @@
+{
+	"name": "pi-gpt-transcribe",
+	"version": "0.1.0",
+	"private": false,
+	"description": "Pi extension. Voice dictation via /transcribe — speech-to-text through OpenAI's gpt-transcribe model.",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"transcribe",
+		"dictation",
+		"stt",
+		"openai",
+		"gpt-transcribe"
+	],
+	"type": "module",
+	"license": "MIT",
+	"author": "youssefsiam38",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/youssefsiam38/pi-gpt-transcribe.git"
+	},
+	"homepage": "https://github.com/youssefsiam38/pi-gpt-transcribe#readme",
+	"bugs": {
+		"url": "https://github.com/youssefsiam38/pi-gpt-transcribe/issues"
+	},
+	"engines": {
+		"node": ">=22"
+	},
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"dependencies": {
+		"decibri": "^5.7.0"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
+	}
+}
