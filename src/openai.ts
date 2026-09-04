@@ -1,15 +1,32 @@
 /**
  * The one network call in this package: POST /v1/audio/transcriptions.
  *
- * Sent as multipart/form-data with a WAV blob, using Node's global fetch,
- * FormData and Blob — no SDK, so `pi install` pulls nothing but the audio
- * capture library.
+ * Sent as multipart/form-data using the global fetch — no SDK, so `pi install`
+ * pulls nothing but the audio capture library.
+ *
+ * The multipart body is assembled by hand into one Buffer rather than handed
+ * to `FormData`. Pi replaces the global fetch with its own bundled undici, and
+ * that build serializes a FormData body through an async loop that enqueues
+ * into a ReadableStream it does not re-check for closure:
+ *
+ *     for await (const bytes of iterator) {
+ *       if (isErrored(stream)) break;          // closed is not errored
+ *       controller.enqueue(new Uint8Array(bytes));
+ *     }
+ *
+ * Aborting a request mid-upload closes that stream, the next enqueue throws
+ * ERR_INVALID_STATE, and because the loop is a floating async IIFE the throw
+ * surfaces as an unhandled rejection that takes the whole Pi process down —
+ * uncatchable from the call site. A Buffer body skips that path entirely: it
+ * is passed through as a plain source with no stream and no enqueue.
  *
  * `keywords` and `languages` are gpt-transcribe's context fields (the model
  * supersedes gpt-4o-transcribe, and `languages` replaces whisper's singular
  * `language`). Both are omitted unless configured, so the default request is
  * the two required fields and nothing else.
  */
+
+import { randomBytes } from "node:crypto";
 
 const ARRAY_FIELD_SUFFIX = "[]";
 const REQUEST_TIMEOUT_MS = 120_000;
@@ -45,14 +62,54 @@ function isRetryableStatus(status: number): boolean {
 	return status === 408 || status === 429 || status >= 500;
 }
 
-function buildForm(request: TranscribeRequest): FormData {
-	const form = new FormData();
-	form.append("file", new Blob([new Uint8Array(request.wav)], { type: "audio/wav" }), "audio.wav");
-	form.append("model", request.model);
-	if (request.prompt) form.append("prompt", request.prompt);
-	for (const keyword of request.keywords ?? []) form.append(`keywords${ARRAY_FIELD_SUFFIX}`, keyword);
-	for (const language of request.languages ?? []) form.append(`languages${ARRAY_FIELD_SUFFIX}`, language);
-	return form;
+const CRLF = "\r\n";
+
+/** Field values come from the user's config file. A bare CR or LF in one would
+ *  end the part early and corrupt the message, so they collapse to spaces. The
+ *  boundary itself is random, so no value can collide with it. */
+function sanitize(value: string): string {
+	return value.replace(/[\r\n]+/g, " ");
+}
+
+interface MultipartBody {
+	/** A plain Uint8Array, not a Buffer: `BodyInit` does not accept Node's
+	 *  Buffer type, and the point of this whole function is to hand fetch a
+	 *  body it treats as a flat source rather than a stream. */
+	readonly body: Uint8Array<ArrayBuffer>;
+	readonly contentType: string;
+}
+
+function buildMultipart(request: TranscribeRequest): MultipartBody {
+	const boundary = `----pi-gpt-transcribe-${randomBytes(16).toString("hex")}`;
+	const parts: Buffer[] = [];
+
+	const field = (name: string, value: string): void => {
+		parts.push(
+			Buffer.from(
+				`--${boundary}${CRLF}Content-Disposition: form-data; name="${name}"${CRLF}${CRLF}${sanitize(value)}${CRLF}`,
+			),
+		);
+	};
+
+	parts.push(
+		Buffer.from(
+			`--${boundary}${CRLF}Content-Disposition: form-data; name="file"; filename="audio.wav"${CRLF}Content-Type: audio/wav${CRLF}${CRLF}`,
+		),
+		request.wav,
+		Buffer.from(CRLF),
+	);
+	field("model", request.model);
+	if (request.prompt) field("prompt", request.prompt);
+	for (const keyword of request.keywords ?? []) field(`keywords${ARRAY_FIELD_SUFFIX}`, keyword);
+	for (const language of request.languages ?? []) field(`languages${ARRAY_FIELD_SUFFIX}`, language);
+	parts.push(Buffer.from(`--${boundary}--${CRLF}`));
+
+	// Copied into a plain ArrayBuffer rather than handed over as the Buffer
+	// itself: Node's Buffer is pool-backed and is not a `BodyInit`.
+	const joined = Buffer.concat(parts);
+	const body = new Uint8Array(new ArrayBuffer(joined.byteLength));
+	body.set(joined);
+	return { body, contentType: `multipart/form-data; boundary=${boundary}` };
 }
 
 async function readErrorMessage(response: Response): Promise<string> {
@@ -80,10 +137,11 @@ async function postOnce(request: TranscribeRequest): Promise<string> {
 	const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
 	const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
 
+	const { body, contentType } = buildMultipart(request);
 	const response = await fetch(`${request.baseUrl}/audio/transcriptions`, {
 		method: "POST",
-		headers: { Authorization: `Bearer ${request.apiKey}` },
-		body: buildForm(request),
+		headers: { Authorization: `Bearer ${request.apiKey}`, "Content-Type": contentType },
+		body,
 		signal,
 	});
 

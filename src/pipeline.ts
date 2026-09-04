@@ -41,6 +41,7 @@ export class DictationPipeline {
 	private pending = 0;
 	private paused = false;
 	private stopped = false;
+	private detached = false;
 	private parts: string[] = [];
 	/** Tail of the serialized request chain. Awaiting it awaits every segment
 	 *  queued so far, which is exactly what the commit drain needs. */
@@ -62,7 +63,7 @@ export class DictationPipeline {
 		this.mic.on("silence", () => this.flush());
 		this.mic.once("error", (error) => {
 			appendErrorLog("mic", error ?? new Error("microphone error"));
-			this.callbacks.onError(`Microphone error: ${describeError(error)}`);
+			this.notify(() => this.callbacks.onError(`Microphone error: ${describeError(error)}`));
 		});
 	}
 
@@ -79,6 +80,16 @@ export class DictationPipeline {
 		// spoken are transcribed now rather than getting glued to whatever is
 		// said after the resume.
 		if (paused) this.flush();
+	}
+
+	/**
+	 * Stop calling back into the UI. The overlay is torn down the moment the
+	 * user commits or cancels, but requests stay in flight behind it — and a
+	 * callback that touches a disposed TUI throws from inside the request
+	 * chain, where nothing on the cancel path is awaiting to catch it.
+	 */
+	detach(): void {
+		this.detached = true;
 	}
 
 	/** Stop capture and queue whatever is still buffered. */
@@ -117,7 +128,9 @@ export class DictationPipeline {
 
 	private onChunk(chunk: Buffer): void {
 		if (this.stopped) return;
-		this.callbacks.onLevel(rmsInt16(chunk));
+		// Guarded like every other callback: this one runs inside the mic's own
+		// event handler, so a throw would surface inside the capture stream.
+		this.notify(() => this.callbacks.onLevel(rmsInt16(chunk)));
 		if (this.paused) return;
 		this.chunks.push(chunk);
 		this.segmentBytes += chunk.length;
@@ -140,7 +153,7 @@ export class DictationPipeline {
 
 	private enqueue(pcm: Buffer): void {
 		this.pending += 1;
-		this.callbacks.onPending(this.pending);
+		this.notify(() => this.callbacks.onPending(this.pending));
 		// Index the slot now, fill it when the response lands: the chain is
 		// serial, so slots complete in the order they were reserved and the
 		// transcript reads in the order it was spoken.
@@ -159,15 +172,32 @@ export class DictationPipeline {
 					signal: this.signal,
 				});
 				this.parts[slot] = text.trim();
-				this.callbacks.onTranscript(this.transcript);
+				this.notify(() => this.callbacks.onTranscript(this.transcript));
 			} catch (error) {
 				if (this.signal.aborted) return;
 				appendErrorLog("transcribe", error);
-				this.callbacks.onError(describeError(error));
+				this.notify(() => this.callbacks.onError(describeError(error)));
 			} finally {
 				this.pending -= 1;
-				this.callbacks.onPending(this.pending);
+				this.notify(() => this.callbacks.onPending(this.pending));
 			}
 		});
+		// The commit path awaits this chain; the cancel path does not. Without a
+		// terminal handler an unexpected rejection would be unhandled, and an
+		// unhandled rejection ends the Pi process.
+		this.queue = this.queue.catch((error) => {
+			appendErrorLog("queue", error);
+		});
+	}
+
+	/** Run a UI callback unless the overlay is gone, and never let one throw
+	 *  into the request chain. */
+	private notify(emit: () => void): void {
+		if (this.detached) return;
+		try {
+			emit();
+		} catch (error) {
+			appendErrorLog("callback", error);
+		}
 	}
 }

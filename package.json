@@ -1,6 +1,6 @@
 {
 	"name": "pi-gpt-transcribe",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"private": false,
 	"description": "Pi extension. Voice dictation via /transcribe — speech-to-text through OpenAI's gpt-transcribe model.",
 	"keywords": [

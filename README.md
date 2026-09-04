@@ -113,6 +113,8 @@ Pi already holds for its own `openai` provider.
   software flow control on some setups. Run `stty -ixon`, or set `"hotkey"` to something
   else in the config file.
 - **`/transcribe` is not found** — restart your Pi session after installing.
+- **Pi exits with `ERR_INVALID_STATE: ReadableStream is already closed`** — fixed in
+  0.1.1. Update with `pi update git:github.com/youssefsiam38/pi-gpt-transcribe`.
 - **A phrase silently failed to transcribe** — errors go to
   `~/.config/pi-gpt-transcribe/errors.log`, not to the terminal, because stderr would
   corrupt the live overlay. The underlying HTTP status and message are there.

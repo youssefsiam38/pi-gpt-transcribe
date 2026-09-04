@@ -162,6 +162,9 @@ export async function runDictation(ctx: ExtensionContext, registered: Transcribe
 	});
 
 	if (ticker) clearInterval(ticker);
+	// The overlay is gone the instant ui.custom() resolves; nothing may render
+	// into it after this point.
+	pipeline?.detach();
 	pipeline?.stop();
 
 	if (intent !== "commit") {
