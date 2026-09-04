@@ -16,7 +16,8 @@ Not published to npm — install it straight from git:
 pi install git:github.com/youssefsiam38/pi-gpt-transcribe
 ```
 
-Restart your Pi session.
+Restart your Pi session. The first install takes a few minutes — it builds the native
+audio capture library.
 
 To update later, `pi update git:github.com/youssefsiam38/pi-gpt-transcribe`. To remove it,
 `pi remove git:github.com/youssefsiam38/pi-gpt-transcribe`.
