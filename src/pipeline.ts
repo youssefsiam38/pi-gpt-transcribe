@@ -14,9 +14,9 @@
  * sitting there to drain when you press Enter.
  *
  * Concurrency is capped so a long dictation cannot open an unbounded number of
- * sockets at once, and the live display shows only the contiguous settled
- * prefix — otherwise a late-finishing early segment would make text on screen
- * jump around as it slotted in ahead of text already rendered.
+ * sockets at once, and segments are handed to the consumer only as the
+ * contiguous settled prefix advances — otherwise a late-finishing early
+ * segment would land in the editor after text that was spoken later.
  */
 
 import type { TranscribeConfig } from "./config.js";
@@ -28,8 +28,13 @@ import { encodeWav, rmsInt16 } from "./wav.js";
 export interface PipelineCallbacks {
 	/** Normalized [0, 1] input level, once per captured chunk. */
 	onLevel(level: number): void;
-	/** Full committed transcript, after each segment lands. */
-	onTranscript(text: string): void;
+	/**
+	 * One transcribed phrase, delivered strictly in spoken order. A later
+	 * segment that finishes first is held until every earlier one has settled,
+	 * because the consumer inserts these into the editor at the cursor and
+	 * text already inserted cannot be reordered afterwards.
+	 */
+	onSegment(text: string): void;
 	/** Segments captured but not yet transcribed. */
 	onPending(count: number): void;
 	/** Human-readable summary of a failure already written to errors.log. */
@@ -90,6 +95,8 @@ export class DictationPipeline {
 	/** Per-slot completion. A slot can be settled and still empty — a segment
 	 *  that came back blank, or one whose request failed. */
 	private settled: boolean[] = [];
+	/** Slots handed to `onSegment` so far; always a prefix of the settled ones. */
+	private delivered = 0;
 	/** Every request started so far. Awaiting them all is the commit drain. */
 	private tasks: Promise<void>[] = [];
 	/** Most recent request failure, kept on the pipeline itself: the error
@@ -147,20 +154,14 @@ export class DictationPipeline {
 	}
 
 	/**
-	 * What the overlay renders: the run of slots settled from the start, with
-	 * no gap. Responses arrive out of order, so rendering every filled slot
-	 * would show a later phrase first and then shuffle it down the line when
-	 * the earlier one landed. Holding at the first unsettled slot costs a
-	 * little latency on screen and makes the text append-only.
+	 * Text transcribed but not yet handed to `onSegment` — after a drain, the
+	 * phrases that finished once the consumer stopped accepting deliveries.
 	 */
-	private get visibleTranscript(): string {
-		const visible: string[] = [];
-		for (let slot = 0; slot < this.parts.length; slot++) {
-			if (!this.settled[slot]) break;
-			const part = this.parts[slot];
-			if (part) visible.push(part);
-		}
-		return visible.join(" ");
+	get undelivered(): string {
+		return this.parts
+			.slice(this.delivered)
+			.filter((part) => part !== "")
+			.join(" ");
 	}
 
 	setPaused(paused: boolean): void {
@@ -344,8 +345,25 @@ export class DictationPipeline {
 			// for the rest of the session.
 			this.settled[slot] = true;
 			this.pending -= 1;
-			this.notify(() => this.callbacks.onTranscript(this.visibleTranscript));
+			this.deliverReady();
 			this.notify(() => this.callbacks.onPending(this.pending));
+		}
+	}
+
+	/** Hand over every settled slot at the front of the queue, in order. Stops
+	 *  at the first slot still in flight; nothing after it moves until it
+	 *  settles, however long ago the later ones finished. */
+	private deliverReady(): void {
+		// After detach the consumer is no longer inserting, so nothing is
+		// consumed: whatever settles from here on stays in `undelivered` for
+		// the caller that ends the session to place — appended to a submitted
+		// prompt, or pasted after a manual stop.
+		if (this.detached) return;
+		while (this.delivered < this.parts.length && this.settled[this.delivered]) {
+			const slot = this.delivered;
+			this.delivered += 1;
+			const text = this.parts[slot];
+			if (text) this.notify(() => this.callbacks.onSegment(text));
 		}
 	}
 

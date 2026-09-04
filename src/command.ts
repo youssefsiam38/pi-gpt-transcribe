@@ -1,44 +1,75 @@
 /**
- * `/transcribe` and its hotkey.
+ * `/transcribe` and its hotkey — both toggle a dictation session.
  *
- * Both entry points run the same body: open the mic, show the overlay, and on
- * commit paste the transcript into Pi's editor. Nothing is submitted for you —
- * the text lands in the prompt so a misheard word gets caught before it reaches
- * the model.
+ * There is no overlay. Dictation runs behind the prompt: each phrase you
+ * finish is transcribed and inserted into the editor at the cursor, while the
+ * editor keeps focus, so you can type and correct with the keyboard at the
+ * same time. A one-line widget above the editor shows the meter and clock.
+ * Submitting the prompt ends the session, and a phrase still in flight at
+ * that moment is appended to what was submitted rather than left behind for
+ * the next prompt.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { KeyId } from "@earendil-works/pi-tui";
+import type { KeyId, TUI } from "@earendil-works/pi-tui";
 import { CONFIG_PATH, loadConfig, resolveApiKey, type TranscribeConfig } from "./config.js";
 import { appendErrorLog, debugLog, describeError, LOG_PATH, setDebugEnabled } from "./log.js";
 import { openMic } from "./mic.js";
-import { DictationOverlay, type OverlayIntent, type OverlayState } from "./overlay.js";
 import { DictationPipeline } from "./pipeline.js";
+import { DictationWidget, type WidgetState } from "./widget.js";
 
 export const COMMAND_NAME = "transcribe";
-const COMMAND_DESCRIPTION = "Dictate with your voice — transcribed by OpenAI gpt-transcribe";
+const COMMAND_DESCRIPTION = "Start or stop dictation — transcribed by OpenAI gpt-transcribe into the prompt";
 
-/** Redraw cadence while the overlay is open. Fast enough for a smooth level
- *  meter, slow enough that the render loop is not the busiest thing running. */
-const TICK_MS = 100;
+const WIDGET_KEY = "gpt-transcribe";
 
-/** Ceiling on the post-commit wait for in-flight segments. Normally only the
- *  last phrase is outstanding and this resolves in a second or two. */
+/** Ceiling on the wait for in-flight phrases when a session ends. Normally
+ *  only the last phrase is outstanding and this resolves in a second or two. */
 const DRAIN_TIMEOUT_MS = 30_000;
 
-const STATUS_KEY = "gpt-transcribe";
+interface Session {
+	/** Captured at start: `finish` runs from the `input` hook too, which has
+	 *  no UI context of its own, and it must take the widget down. */
+	readonly ui: ExtensionContext["ui"];
+	readonly pipeline: DictationPipeline;
+	readonly controller: AbortController;
+	readonly state: WidgetState;
+	/** The app TUI, captured from the widget factory, for repaints after a paste. */
+	tui: Pick<TUI, "requestRender"> | undefined;
+	/** Once false, transcribed phrases stop going into the editor and collect
+	 *  in `pipeline.undelivered` instead — set when the prompt is submitted. */
+	inserting: boolean;
+}
+
+/** One session per process. The hotkey and the command both toggle it. */
+let session: Session | undefined;
 
 export function registerTranscribe(pi: ExtensionAPI, config: TranscribeConfig): void {
 	pi.registerCommand(COMMAND_NAME, {
 		description: COMMAND_DESCRIPTION,
-		handler: (_args: string, ctx: ExtensionContext) => runDictation(ctx, config),
+		handler: (_args: string, ctx: ExtensionContext) => toggle(ctx, config),
+	});
+
+	// Submitting the prompt ends dictation. Nothing keeps recording — or
+	// spending API minutes — while the agent works. Whatever was still being
+	// transcribed at that instant belongs to the prompt being sent, so it is
+	// appended to the submitted text rather than pasted into the next one.
+	pi.on("input", async (event) => {
+		if (!session) return { action: "continue" as const };
+		const tail = await finish(session);
+		if (tail === "") return { action: "continue" as const };
+		return { action: "transform" as const, text: joinWithSpace(event.text, tail) };
+	});
+
+	pi.on("session_shutdown", async () => {
+		if (session) await finish(session);
 	});
 
 	if (config.hotkey === undefined) return;
 	try {
 		pi.registerShortcut(config.hotkey as KeyId, {
 			description: COMMAND_DESCRIPTION,
-			handler: (ctx) => runDictation(ctx, config),
+			handler: (ctx) => toggle(ctx, config),
 		});
 	} catch (error) {
 		// An unparseable key in config.json is a typo, not a reason to lose the
@@ -78,9 +109,27 @@ async function resolveKey(ctx: ExtensionContext, config: TranscribeConfig): Prom
 	}
 }
 
-export async function runDictation(ctx: ExtensionContext, registered: TranscribeConfig): Promise<void> {
+/** "already typed" + "new phrase" with exactly one space between, and none
+ *  when the editor is empty or already ends in whitespace. */
+function joinWithSpace(existing: string, addition: string): string {
+	if (existing === "" || /\s$/.test(existing)) return `${existing}${addition}`;
+	return `${existing} ${addition}`;
+}
+
+export async function toggle(ctx: ExtensionContext, registered: TranscribeConfig): Promise<void> {
+	if (session) {
+		const tail = await finish(session);
+		// Stopping by hand keeps the last phrase where it belongs: in the
+		// prompt, after whatever is already there.
+		if (tail !== "") insert(ctx, session?.tui, tail);
+		return;
+	}
+	await start(ctx, registered);
+}
+
+async function start(ctx: ExtensionContext, registered: TranscribeConfig): Promise<void> {
 	if (!ctx.hasUI || ctx.mode !== "tui") {
-		ctx.ui.notify(`/${COMMAND_NAME} draws an overlay and needs an interactive session`, "error");
+		ctx.ui.notify(`/${COMMAND_NAME} dictates into the prompt and needs an interactive session`, "error");
 		return;
 	}
 
@@ -88,10 +137,7 @@ export async function runDictation(ctx: ExtensionContext, registered: Transcribe
 	setDebugEnabled(config.debug);
 	const apiKey = await resolveKey(ctx, config);
 	if (!apiKey) {
-		ctx.ui.notify(
-			`No API key. Export ${config.apiKeyEnv}, or set "apiKey" in ${CONFIG_PATH}`,
-			"error",
-		);
+		ctx.ui.notify(`No API key. Export ${config.apiKeyEnv}, or set "apiKey" in ${CONFIG_PATH}`, "error");
 		return;
 	}
 
@@ -108,130 +154,85 @@ export async function runDictation(ctx: ExtensionContext, registered: Transcribe
 	}
 
 	const controller = new AbortController();
-	const startedAt = Date.now();
-	const state: OverlayState = {
-		transcript: "",
-		level: 0,
-		pending: 0,
-		paused: false,
-		error: undefined,
-		elapsedMs: 0,
-	};
-
-	let pipeline: DictationPipeline | undefined;
-	let ticker: ReturnType<typeof setInterval> | undefined;
-	// Captured from the overlay factory: the app's TUI, which outlives the
-	// overlay. Needed after the paste — see the comment there.
-	let requestRender: (() => void) | undefined;
-
-	const intent = await ctx.ui.custom<OverlayIntent>((tui, theme, keybindings, done) => {
-		const overlay = new DictationOverlay(theme, keybindings, tui.terminal, {
-			onIntent: (result) => done(result),
-			onTogglePause: () => {
-				state.paused = !state.paused;
-				pipeline?.setPaused(state.paused);
-			},
-		});
-
-		requestRender = () => tui.requestRender();
-
-		const refresh = (): void => {
-			state.elapsedMs = Date.now() - startedAt;
-			overlay.setState(state);
-			tui.requestRender();
-		};
-
-		pipeline = new DictationPipeline(mic, config, apiKey, controller.signal, {
+	const state: WidgetState = { level: 0, pending: 0, error: undefined, startedAt: Date.now() };
+	const current: Session = {
+		ui: ctx.ui,
+		controller,
+		state,
+		tui: undefined,
+		inserting: true,
+		pipeline: new DictationPipeline(mic, config, apiKey, controller.signal, {
 			onLevel: (level) => {
 				state.level = level;
 			},
-			onTranscript: (text) => {
-				state.transcript = text;
-				refresh();
+			onSegment: (text) => {
+				// Deliveries arrive in spoken order (the pipeline holds later
+				// phrases until earlier ones settle), so inserting each at the
+				// cursor as it lands keeps the prompt in the order it was said.
+				if (current.inserting) insert(ctx, current.tui, text);
 			},
 			onPending: (count) => {
 				state.pending = count;
-				refresh();
 			},
 			onError: (message) => {
 				state.error = message;
-				refresh();
 			},
-		});
-		pipeline.start();
+		}),
+	};
+	session = current;
 
-		// The clock and the level meter change without any pipeline event, so
-		// the overlay needs a heartbeat of its own to stay live.
-		ticker = setInterval(refresh, TICK_MS);
-		refresh();
-		return overlay;
+	ctx.ui.setWidget(WIDGET_KEY, (tui, theme) => {
+		current.tui = tui;
+		return new DictationWidget(tui, theme, state, config.hotkey);
 	});
+	current.pipeline.start();
+	debugLog("session", "started");
+}
 
-	if (ticker) clearInterval(ticker);
-	// The overlay is gone the instant ui.custom() resolves; nothing may render
-	// into it after this point.
-	pipeline?.detach();
-	pipeline?.stop();
+/**
+ * Insert a phrase into the editor at the cursor, continuing whatever is
+ * already there. pasteToEditor writes straight into the editor component and
+ * bypasses the TUI's input path — the only thing that repaints after a
+ * keystroke — so the repaint is requested explicitly, or the text sits in the
+ * editor unseen until the next key.
+ */
+function insert(ctx: ExtensionContext, tui: Pick<TUI, "requestRender"> | undefined, text: string): void {
+	const existing = ctx.ui.getEditorText();
+	const prefix = existing === "" || /\s$/.test(existing) ? "" : " ";
+	ctx.ui.pasteToEditor(`${prefix}${text}`);
+	tui?.requestRender();
+}
 
-	if (intent !== "commit") {
-		// Cancel aborts first: the in-flight requests are for text nobody will
-		// read, and the pipeline suppresses errors once the signal is down.
-		controller.abort();
-		return;
-	}
+/**
+ * End the session: stop capture, wait (bounded) for phrases still in flight,
+ * take down the widget, and return the text that finished after insertion
+ * stopped — the caller decides where that goes.
+ */
+async function finish(current: Session): Promise<string> {
+	if (session !== current) return "";
+	session = undefined;
+	current.inserting = false;
+	current.pipeline.detach();
+	current.pipeline.stop();
 
-	// Stop happens before abort on this path — the final segment's request is
-	// the one whose result the user is waiting for.
-	let transcript = "";
-	const outstanding = pipeline?.pendingCount ?? 0;
-	debugLog("commit", `pending at Enter: ${outstanding}`);
-	if (outstanding === 0) {
-		// Everything spoken is already transcribed and on screen. Paste it and
-		// get out: no status, no drain, no wait. Showing "transcribing…" here
-		// regardless of whether anything was in flight is what made ending on a
-		// pause look like it was re-transcribing text the user could already
-		// read.
-		transcript = pipeline?.transcript ?? "";
-		controller.abort();
-	} else {
-		ctx.ui.setStatus(STATUS_KEY, `transcribing ${outstanding === 1 ? "final phrase" : `${outstanding} phrases`}…`);
+	const outstanding = current.pipeline.pendingCount;
+	debugLog("session", `stopping, pending: ${outstanding}`);
+	if (outstanding > 0) {
+		// Only now is there anything to wait for. Showing a status with
+		// nothing in flight made ending on a pause look like a re-transcribe.
+		const label = outstanding === 1 ? "final phrase" : `${outstanding} phrases`;
 		const startedAt = Date.now();
 		try {
-			transcript = await pipeline!.drain(DRAIN_TIMEOUT_MS);
+			await current.pipeline.drain(DRAIN_TIMEOUT_MS);
 		} finally {
-			debugLog("commit", `drained in ${Date.now() - startedAt}ms`);
-			ctx.ui.setStatus(STATUS_KEY, undefined);
-			controller.abort();
+			debugLog("session", `drained in ${Date.now() - startedAt}ms (${label})`);
 		}
 	}
-
-	if (transcript !== "") {
-		ctx.ui.pasteToEditor(transcript);
-		// pasteToEditor writes straight into the editor component and bypasses
-		// the TUI's input path, which is the only thing that schedules a repaint
-		// after a keystroke. The overlay's own teardown repaints before this
-		// code runs, so without an explicit request the screen keeps showing
-		// an empty prompt while the editor already holds the text — and the
-		// next Enter submits words the user never saw. An earlier version only
-		// repainted by accident, via the setStatus() call after the drain.
-		requestRender?.();
-		return;
-	}
-	// Never end silently. An empty result with nothing said about it is
-	// indistinguishable from the command not having run, and it hides exactly
-	// the failures worth reporting — every segment judged silent, or every
-	// request failing.
-	// Read the failure off the pipeline, not the overlay state: the overlay
-	// was detached before the final drain, so an error in that last request
-	// never reached `state.error`, and the user was told "no speech detected"
-	// when the truth was a 401 or a 500.
-	const failure = pipeline?.lastError ?? state.error;
-	if (failure) {
-		ctx.ui.notify(`Nothing transcribed — ${failure}. See ${LOG_PATH}`, "error");
-	} else {
-		ctx.ui.notify(
-			`Nothing transcribed — no speech was detected. Set "debug": true in ${CONFIG_PATH} to trace why.`,
-			"warning",
-		);
-	}
+	current.controller.abort();
+	current.ui.setWidget(WIDGET_KEY, undefined);
+	// Per-phrase failures showed in the widget while it was up; once it is
+	// gone the last one still needs saying, or a dead key fails silently.
+	const failure = current.pipeline.lastError;
+	if (failure) current.ui.notify(`Transcription failed — ${failure}. See ${LOG_PATH}`, "error");
+	return current.pipeline.undelivered;
 }
