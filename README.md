@@ -92,7 +92,7 @@ a default, create `~/.config/pi-gpt-transcribe/config.json`:
 | `minSegmentSeconds` | `0.35` | Drop segments shorter than this — they are clicks, not speech |
 | `vadThreshold` | `0.5` | Speech probability above which audio counts as speech (`0`–`1`) |
 | `silenceHoldoffMs` | `500` | Quiet time that ends a phrase |
-| `speechFloor` | `0.005` | Level gate, used only if the voice detector never fires at all |
+| `speechFloor` | `0.005` | Absolute minimum for the speech gate. The gate itself is relative to the room's measured noise floor |
 | `debug` | `false` | Write a decision trace to `~/.config/pi-gpt-transcribe/debug.log` |
 
 The hotkey binds at load, so changing it needs a `/reload`. Every other key is re-read on

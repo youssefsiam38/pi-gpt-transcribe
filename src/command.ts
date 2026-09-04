@@ -202,7 +202,18 @@ export async function runDictation(ctx: ExtensionContext, registered: Transcribe
 
 	if (transcript !== "") {
 		ctx.ui.pasteToEditor(transcript);
-	} else if (state.error) {
+		return;
+	}
+	// Never end silently. An empty result with nothing said about it is
+	// indistinguishable from the command not having run, and it hides exactly
+	// the failures worth reporting — every segment judged silent, or every
+	// request failing.
+	if (state.error) {
 		ctx.ui.notify(`Nothing transcribed — ${state.error}. See ${LOG_PATH}`, "error");
+	} else {
+		ctx.ui.notify(
+			`Nothing transcribed — no speech was detected. Set "debug": true in ${CONFIG_PATH} to trace why.`,
+			"warning",
+		);
 	}
 }

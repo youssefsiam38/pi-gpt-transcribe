@@ -42,6 +42,25 @@ export interface PipelineCallbacks {
  *  requests-per-minute tier-1 limit. */
 const MAX_CONCURRENT_REQUESTS = 4;
 
+/** How far over the room's noise floor a segment's peak must reach to count as
+ *  speech. 3x is about 10 dB — speech clears it, room tone does not. */
+const NOISE_FLOOR_MARGIN = 3;
+
+/**
+ * Ceiling on the computed threshold, about -34 dBFS. Audio this loud is treated
+ * as speech no matter what the floor estimate says, which bounds two ways the
+ * estimate can be wrong: a session that opens mid-sentence seeds the floor from
+ * speech itself, and a genuinely loud room would otherwise scale the threshold
+ * up past a quiet speaker. Erring toward sending costs a fraction of a cent;
+ * erring the other way loses words.
+ */
+const MAX_SPEECH_THRESHOLD = 0.02;
+
+/** Per-chunk rate at which the noise floor drifts back up. Deliberately tiny:
+ *  at 10 chunks a second it takes minutes to follow a genuinely louder room,
+ *  and a single loud chunk moves it almost not at all. */
+const NOISE_FLOOR_RISE = 0.0005;
+
 /** Why a segment was closed. Only `max` continues an utterance. */
 type FlushReason = "silence" | "max" | "pause" | "stop";
 
@@ -56,9 +75,9 @@ export class DictationPipeline {
 	private segmentBytes = 0;
 	/** Live VAD state: between a `speech` event and its matching `silence`. */
 	private inSpeech = false;
-	/** Whether the VAD has fired even once. If it never does, its verdict is
-	 *  worthless and the level heuristic takes over for the whole session. */
-	private everSawSpeech = false;
+	/** Quietest audio observed this session — the room's own noise floor, which
+	 *  is what "silence" actually means on this microphone at this gain. */
+	private noiseFloor = Number.POSITIVE_INFINITY;
 	/** Whether the segment being accumulated contains VAD-confirmed speech. */
 	private segmentSawSpeech = false;
 	/** Loudest chunk in the segment being accumulated. */
@@ -92,7 +111,6 @@ export class DictationPipeline {
 		this.mic.on("data", (chunk) => this.onChunk(chunk));
 		this.mic.on("speech", () => {
 			this.inSpeech = true;
-			this.everSawSpeech = true;
 			this.segmentSawSpeech = true;
 			debugLog("vad", "speech");
 		});
@@ -211,6 +229,11 @@ export class DictationPipeline {
 		this.chunks.push(chunk);
 		this.segmentBytes += chunk.length;
 		if (level > this.segmentPeak) this.segmentPeak = level;
+		// Drops to a new minimum at once and creeps back up slowly, so a room
+		// that gets noisier is tracked while one loud moment does not raise the
+		// floor for the rest of the session.
+		this.noiseFloor =
+			level < this.noiseFloor ? level : this.noiseFloor + (level - this.noiseFloor) * NOISE_FLOOR_RISE;
 		// A monologue with no breath pause would otherwise buffer forever and
 		// show nothing. Cut it and let the next chunk start a fresh segment.
 		if (this.segmentBytes >= this.maxSegmentBytes) this.flush("max");
@@ -240,19 +263,29 @@ export class DictationPipeline {
 			return;
 		}
 
-		// The detector's verdict decides. It is the only thing that reliably
-		// separates "you stopped talking a moment ago" from "you are still
-		// talking", and getting that wrong is what put a request of pure room
-		// tone in front of every Enter. The level check is a fallback for a
-		// session where the detector never fired at all, where a crude gate
-		// beats no gate.
-		const hasSpeech = this.everSawSpeech ? sawSpeech : peak >= this.config.speechFloor;
+		// Judged against the room rather than an absolute level. A fixed
+		// threshold cannot tell room tone from speech across microphones: 0.005
+		// was under the room tone on a mic with gain on it, which put a request
+		// of pure silence in front of every Enter. Speech runs an order of
+		// magnitude over the floor the room settles at; room tone sits on it.
+		//
+		// The detector can only ever ADD confidence here, never remove it.
+		// Gating on it directly was a mistake: if it fires once early and never
+		// re-arms, every later segment looks speechless and the whole dictation
+		// is silently thrown away. Wrongly sending a segment costs a fraction of
+		// a cent; wrongly dropping one loses words the user already spoke.
+		const floor = Number.isFinite(this.noiseFloor) ? this.noiseFloor : 0;
+		const threshold = Math.min(MAX_SPEECH_THRESHOLD, Math.max(this.config.speechFloor, floor * NOISE_FLOOR_MARGIN));
+		const hasSpeech = sawSpeech || peak >= threshold;
 		if (!hasSpeech) {
-			drop(this.everSawSpeech ? "no speech detected in segment" : `peak ${peak.toFixed(4)} below floor`);
+			drop(`peak ${peak.toFixed(4)} under ${threshold.toFixed(4)} (floor ${floor.toFixed(4)})`);
 			return;
 		}
 
-		debugLog("flush", `${reason} ${seconds.toFixed(2)}s sent (peak ${peak.toFixed(4)})`);
+		debugLog(
+			"flush",
+			`${reason} ${seconds.toFixed(2)}s sent (peak ${peak.toFixed(4)}, floor ${floor.toFixed(4)}, vad ${sawSpeech})`,
+		);
 		this.enqueue(pcm);
 	}
 
