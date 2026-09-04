@@ -38,6 +38,10 @@ export class DictationPipeline {
 	private readonly minSegmentBytes: number;
 	private chunks: Buffer[] = [];
 	private segmentBytes = 0;
+	/** Set by the VAD's `speech` event for the segment being accumulated. */
+	private segmentSawSpeech = false;
+	/** Loudest chunk in the segment being accumulated. */
+	private segmentPeak = 0;
 	private pending = 0;
 	private paused = false;
 	private stopped = false;
@@ -60,6 +64,9 @@ export class DictationPipeline {
 
 	start(): void {
 		this.mic.on("data", (chunk) => this.onChunk(chunk));
+		this.mic.on("speech", () => {
+			this.segmentSawSpeech = true;
+		});
 		this.mic.on("silence", () => this.flush());
 		this.mic.once("error", (error) => {
 			appendErrorLog("mic", error ?? new Error("microphone error"));
@@ -128,12 +135,14 @@ export class DictationPipeline {
 
 	private onChunk(chunk: Buffer): void {
 		if (this.stopped) return;
+		const level = rmsInt16(chunk);
 		// Guarded like every other callback: this one runs inside the mic's own
 		// event handler, so a throw would surface inside the capture stream.
-		this.notify(() => this.callbacks.onLevel(rmsInt16(chunk)));
+		this.notify(() => this.callbacks.onLevel(level));
 		if (this.paused) return;
 		this.chunks.push(chunk);
 		this.segmentBytes += chunk.length;
+		if (level > this.segmentPeak) this.segmentPeak = level;
 		// A monologue with no breath pause would otherwise buffer forever and
 		// show nothing. Cut it and let the next chunk start a fresh segment.
 		if (this.segmentBytes >= this.maxSegmentBytes) this.flush();
@@ -142,12 +151,32 @@ export class DictationPipeline {
 	private flush(): void {
 		if (this.chunks.length === 0) return;
 		const pcm = Buffer.concat(this.chunks);
+		const sawSpeech = this.segmentSawSpeech;
+		const peak = this.segmentPeak;
 		this.chunks = [];
 		this.segmentBytes = 0;
+		this.segmentSawSpeech = false;
+		this.segmentPeak = 0;
+
 		// Sub-threshold segments are door clicks and keyboard clacks the VAD
 		// briefly called speech. Sending one costs a request and returns an
 		// invented word.
 		if (pcm.length < this.minSegmentBytes) return;
+
+		// Two independent reasons to believe there are words in here, because
+		// neither alone is enough. The VAD's own verdict is the better signal,
+		// but it does not survive a `maxSegmentSeconds` cut: that starts a fresh
+		// segment mid-monologue with no new `speech` transition to observe, so
+		// the level check is what carries the rest of a long dictation. The
+		// level check alone would be a crude gate on a quiet speaker.
+		//
+		// This is what makes Enter feel instant after a pause. The VAD has
+		// already flushed your last phrase by then and the buffer holds nothing
+		// but room tone, so the final flush drops it and there is no request to
+		// wait on. Press Enter mid-sentence and the tail does hold speech — that
+		// one still goes, and the wait is real work, not a re-run.
+		if (!sawSpeech && peak < this.config.speechFloor) return;
+
 		this.enqueue(pcm);
 	}
 

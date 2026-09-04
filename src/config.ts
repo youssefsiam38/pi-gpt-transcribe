@@ -47,6 +47,13 @@ export const DEFAULT_MIN_SEGMENT_SECONDS = 0.35;
 /** Silero speech probability above which audio counts as speech. */
 export const DEFAULT_VAD_THRESHOLD = 0.5;
 
+/**
+ * Peak level below which a segment is treated as silence and never sent.
+ * Normalized RMS, so 0.005 is about -46 dBFS: comfortably under quiet speech
+ * (roughly -40 dBFS) and well over typical room tone (under -55 dBFS).
+ */
+export const DEFAULT_SPEECH_FLOOR = 0.005;
+
 /** How long the VAD waits below threshold before calling it a phrase end.
  *  decibri's own default is 300 ms, which cuts at natural breath pauses;
  *  500 ms is the LiveKit value and covers them without feeling laggy. */
@@ -73,6 +80,7 @@ export interface TranscribeConfig {
 	readonly minSegmentSeconds: number;
 	readonly vadThreshold: number;
 	readonly silenceHoldoffMs: number;
+	readonly speechFloor: number;
 }
 
 /** Values that disable the hotkey. Mirrors the spellings people actually try. */
@@ -124,6 +132,7 @@ export function loadConfig(): TranscribeConfig {
 		minSegmentSeconds: num(raw.minSegmentSeconds, DEFAULT_MIN_SEGMENT_SECONDS, 0, 10),
 		vadThreshold: num(raw.vadThreshold, DEFAULT_VAD_THRESHOLD, 0, 1),
 		silenceHoldoffMs: num(raw.silenceHoldoffMs, DEFAULT_SILENCE_HOLDOFF_MS, 0, 5000),
+		speechFloor: num(raw.speechFloor, DEFAULT_SPEECH_FLOOR, 0, 1),
 	};
 }
 
