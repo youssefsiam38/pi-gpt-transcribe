@@ -6,10 +6,17 @@
  * it anyway if you never pause for breath. Each closed segment becomes one
  * request.
  *
- * Requests are serialized through a promise chain rather than fired in
- * parallel. Two segments in flight at once would race to append their text and
- * silently reorder your sentences whenever the second one came back first —
- * a defect you would only notice by re-reading the paste.
+ * Requests run concurrently. Ordering does not depend on them completing in
+ * order: cutting a segment reserves its slot in `parts` synchronously, and the
+ * response only ever fills that slot, so the transcript reads in spoken order
+ * whatever sequence the API answers in. Serializing the requests instead would
+ * make every segment wait out all the ones before it, and the backlog would be
+ * sitting there to drain when you press Enter.
+ *
+ * Concurrency is capped so a long dictation cannot open an unbounded number of
+ * sockets at once, and the live display shows only the contiguous settled
+ * prefix — otherwise a late-finishing early segment would make text on screen
+ * jump around as it slotted in ahead of text already rendered.
  */
 
 import type { TranscribeConfig } from "./config.js";
@@ -29,6 +36,12 @@ export interface PipelineCallbacks {
 	onError(message: string): void;
 }
 
+/** Ceiling on requests in flight at once. Segments are cut at speech pauses,
+ *  so this is generous in normal use; it exists so a very long dictation over a
+ *  slow link cannot open sockets without bound. Well under the model's 500
+ *  requests-per-minute tier-1 limit. */
+const MAX_CONCURRENT_REQUESTS = 4;
+
 function secondsToBytes(seconds: number): number {
 	return Math.round(seconds * SAMPLE_RATE) * BYTES_PER_SAMPLE;
 }
@@ -47,9 +60,14 @@ export class DictationPipeline {
 	private stopped = false;
 	private detached = false;
 	private parts: string[] = [];
-	/** Tail of the serialized request chain. Awaiting it awaits every segment
-	 *  queued so far, which is exactly what the commit drain needs. */
-	private queue: Promise<void> = Promise.resolve();
+	/** Per-slot completion. A slot can be settled and still empty — a segment
+	 *  that came back blank, or one whose request failed. */
+	private settled: boolean[] = [];
+	/** Every request started so far. Awaiting them all is the commit drain. */
+	private tasks: Promise<void>[] = [];
+	/** Requests currently in flight, against MAX_CONCURRENT_REQUESTS. */
+	private active = 0;
+	private waiters: Array<() => void> = [];
 
 	constructor(
 		private readonly mic: MicStream,
@@ -74,10 +92,28 @@ export class DictationPipeline {
 		});
 	}
 
+	/** Everything transcribed so far, in spoken order — what Enter pastes.
+	 *  Empty slots are segments still in flight, ones that came back blank, or
+	 *  ones whose request failed; dropping them avoids double spaces. */
 	get transcript(): string {
-		// Empty slots are segments still in flight, or ones that came back
-		// blank. Dropping them here keeps the joined text free of double spaces.
 		return this.parts.filter((part) => part !== "").join(" ");
+	}
+
+	/**
+	 * What the overlay renders: the run of slots settled from the start, with
+	 * no gap. Responses arrive out of order, so rendering every filled slot
+	 * would show a later phrase first and then shuffle it down the line when
+	 * the earlier one landed. Holding at the first unsettled slot costs a
+	 * little latency on screen and makes the text append-only.
+	 */
+	private get visibleTranscript(): string {
+		const visible: string[] = [];
+		for (let slot = 0; slot < this.parts.length; slot++) {
+			if (!this.settled[slot]) break;
+			const part = this.parts[slot];
+			if (part) visible.push(part);
+		}
+		return visible.join(" ");
 	}
 
 	setPaused(paused: boolean): void {
@@ -126,11 +162,22 @@ export class DictationPipeline {
 			}, timeoutMs);
 		});
 		try {
-			await Promise.race([this.queue, timeout]);
+			await Promise.race([this.settle(), timeout]);
 		} finally {
 			clearTimeout(timer);
 		}
 		return this.transcript;
+	}
+
+	/** Resolve once no request is outstanding. The loop re-checks because a
+	 *  segment can still be cut while an earlier batch is in flight; after
+	 *  `stop()` nothing new is added and the first pass is the last. */
+	private async settle(): Promise<void> {
+		let started = -1;
+		while (this.tasks.length !== started) {
+			started = this.tasks.length;
+			await Promise.all(this.tasks);
+		}
 	}
 
 	private onChunk(chunk: Buffer): void {
@@ -183,12 +230,20 @@ export class DictationPipeline {
 	private enqueue(pcm: Buffer): void {
 		this.pending += 1;
 		this.notify(() => this.callbacks.onPending(this.pending));
-		// Index the slot now, fill it when the response lands: the chain is
-		// serial, so slots complete in the order they were reserved and the
-		// transcript reads in the order it was spoken.
+		// Reserve the slot now, fill it whenever the response lands. This — not
+		// the order the requests finish in — is what keeps the transcript in
+		// spoken order, which is why the requests can safely run concurrently.
 		const slot = this.parts.length;
 		this.parts.push("");
-		this.queue = this.queue.then(async () => {
+		this.settled.push(false);
+		this.tasks.push(this.run(slot, pcm));
+	}
+
+	/** Never rejects: every failure is logged and the slot settles empty, so
+	 *  one bad segment cannot take down the drain or the process. */
+	private async run(slot: number, pcm: Buffer): Promise<void> {
+		try {
+			await this.acquire();
 			try {
 				const text = await transcribe({
 					wav: encodeWav(pcm, SAMPLE_RATE),
@@ -201,22 +256,37 @@ export class DictationPipeline {
 					signal: this.signal,
 				});
 				this.parts[slot] = text.trim();
-				this.notify(() => this.callbacks.onTranscript(this.transcript));
-			} catch (error) {
-				if (this.signal.aborted) return;
+			} finally {
+				this.release();
+			}
+		} catch (error) {
+			if (!this.signal.aborted) {
 				appendErrorLog("transcribe", error);
 				this.notify(() => this.callbacks.onError(describeError(error)));
-			} finally {
-				this.pending -= 1;
-				this.notify(() => this.callbacks.onPending(this.pending));
 			}
-		});
-		// The commit path awaits this chain; the cancel path does not. Without a
-		// terminal handler an unexpected rejection would be unhandled, and an
-		// unhandled rejection ends the Pi process.
-		this.queue = this.queue.catch((error) => {
-			appendErrorLog("queue", error);
-		});
+		} finally {
+			// Settle before rendering: a failed slot must stop blocking the
+			// visible prefix, or one error would freeze the on-screen transcript
+			// for the rest of the session.
+			this.settled[slot] = true;
+			this.pending -= 1;
+			this.notify(() => this.callbacks.onTranscript(this.visibleTranscript));
+			this.notify(() => this.callbacks.onPending(this.pending));
+		}
+	}
+
+	private async acquire(): Promise<void> {
+		// Re-checked in a loop rather than assumed: several waiters can be woken
+		// by successive releases before any of them runs.
+		while (this.active >= MAX_CONCURRENT_REQUESTS) {
+			await new Promise<void>((resolve) => this.waiters.push(resolve));
+		}
+		this.active += 1;
+	}
+
+	private release(): void {
+		this.active -= 1;
+		this.waiters.shift()?.();
 	}
 
 	/** Run a UI callback unless the overlay is gone, and never let one throw

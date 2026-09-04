@@ -47,17 +47,19 @@ word before it reaches the model.
 ## What you get
 
 - **Phrase-by-phrase transcription, in order** — a voice-activity detector cuts the
-  recording at natural pauses and each segment becomes one request. Requests are
-  serialized, so your sentences never arrive reordered.
+  recording at natural pauses and each segment becomes one request. Segments transcribe
+  concurrently and each fills the slot it was cut into, so the transcript reads in spoken
+  order without your phrases queueing behind one another.
 - **Any microphone works** — capture is delivered at 16 kHz mono whatever the device's
   native rate, resampled inside the capture layer.
 - **A hotkey that reaches the idle prompt** — `Ctrl-Q` is the one plain control key Pi's
   keymaps leave unclaimed. Rebind it, or turn it off, in the config file.
 - **Domain vocabulary** — `prompt`, `keywords` and `languages` are passed through to
   `gpt-transcribe`, so project names and jargon come back spelled right.
-- **`Enter` is instant after a pause** — the trailing buffer is checked for speech
-  before it is sent, so ending on a pause costs no request and no wait. Press `Enter`
-  mid-sentence and the tail still goes; that wait is real work, never a re-run.
+- **`Enter` does not wait on a backlog** — nothing is ever transcribed twice, and the
+  trailing buffer is checked for speech before it is sent, so ending on a pause costs no
+  request and no wait at all. Press `Enter` mid-sentence and only that tail is
+  outstanding.
 - **Failures stay out of your transcript** — a request that errors is retried, then logged
   to a file rather than printed into the overlay. The rest of the dictation is unaffected.
 - **No SDK** — the only runtime dependency is the audio capture library. The API call is
