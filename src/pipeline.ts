@@ -21,7 +21,7 @@
 
 import type { TranscribeConfig } from "./config.js";
 import { appendErrorLog, debugLog, describeError } from "./log.js";
-import { BYTES_PER_SAMPLE, type MicStream, SAMPLE_RATE } from "./mic.js";
+import { BYTES_PER_SAMPLE, type MicStream, SAMPLE_RATE } from "./audio.js";
 import { transcribe } from "./openai.js";
 import { encodeWav, rmsInt16 } from "./wav.js";
 

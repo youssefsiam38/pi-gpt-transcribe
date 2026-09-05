@@ -25,6 +25,7 @@
 
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
+import type { DictationState } from "./state.js";
 
 /** Rows above and below the centre line. Total height is 2·HALF + 1 status
  *  row; Pi caps widgets at 10 lines. */
@@ -43,14 +44,9 @@ const ATTACK = 0.85;
 const RELEASE = 0.35;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
-export interface WidgetState {
-	level: number;
-	pending: number;
-	/** Phrases already inserted into the prompt this session. */
-	inserted: number;
-	error: string | undefined;
-	startedAt: number;
-}
+/** What this widget renders. Defined in `state.js` so a front end that is not
+ *  a terminal can render the same session without importing a TUI. */
+export type WidgetState = DictationState;
 
 function formatElapsed(ms: number): string {
 	const total = Math.floor(ms / 1000);

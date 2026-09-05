@@ -11,26 +11,13 @@
  * the next begins.
  */
 
+import { BYTES_PER_SAMPLE, FRAMES_PER_BUFFER, type MicStream, SAMPLE_RATE } from "./audio.js";
 import type { TranscribeConfig } from "./config.js";
 
-/** Delivered capture rate. 16 kHz mono is the standard speech-model input and
- *  keeps a 20-second segment around 640 KB — far under the 25 MB file cap. */
-export const SAMPLE_RATE = 16_000;
-
-/** 1600 frames at 16 kHz = one chunk per 100 ms, which is a comfortable
- *  cadence for the level meter without flooding the render loop. */
-export const FRAMES_PER_BUFFER = 1600;
-
-export const BYTES_PER_SAMPLE = 2;
-
-/** The slice of decibri's Microphone this package uses. Declared structurally
- *  so the pipeline can be exercised with a plain EventEmitter. */
-export interface MicStream {
-	on(event: "data", listener: (chunk: Buffer) => void): unknown;
-	on(event: "speech" | "silence", listener: () => void): unknown;
-	once(event: "end" | "error" | "close", listener: (error?: Error) => void): unknown;
-	stop(): void;
-}
+// The format and the stream shape describe audio, not devices, so they live in
+// `audio.js` where a caller can reach them without opening a microphone. Kept
+// re-exported here because this is where they have always been imported from.
+export { BYTES_PER_SAMPLE, FRAMES_PER_BUFFER, type MicStream, SAMPLE_RATE };
 
 interface DecibriModule {
 	Microphone: {

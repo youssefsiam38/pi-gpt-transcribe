@@ -1,8 +1,8 @@
 {
 	"name": "pi-gpt-transcribe",
-	"version": "0.2.1",
+	"version": "0.3.0",
 	"private": false,
-	"description": "Pi extension. Toggle dictation with /transcribe or Ctrl-Q — OpenAI gpt-transcribe inserts each phrase into the prompt while you keep typing.",
+	"description": "Pi extension. Toggle dictation with /transcribe or Ctrl-Q — OpenAI gpt-transcribe inserts each phrase into the prompt while you keep typing. Its terminal-free core is importable as pi-gpt-transcribe/core.",
 	"keywords": [
 		"pi-package",
 		"pi-extension",
@@ -13,6 +13,25 @@
 		"gpt-transcribe"
 	],
 	"type": "module",
+	"exports": {
+		".": "./index.ts",
+		"./core": {
+			"types": "./dist/core.d.ts",
+			"import": "./dist/core.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"index.ts",
+		"src",
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json",
+		"typecheck": "tsc -p tsconfig.json"
+	},
 	"license": "MIT",
 	"author": "youssefsiam38",
 	"repository": {
@@ -37,5 +56,9 @@
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": "*",
 		"@earendil-works/pi-tui": "*"
+	},
+	"devDependencies": {
+		"typescript": "5.9.3",
+		"@types/node": "24.7.0"
 	}
 }

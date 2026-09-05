@@ -1,0 +1,21 @@
+{
+	"$comment": [
+		"Builds only the terminal-free core (`src/core.ts` and what it imports).",
+		"The extension itself is not built: Pi loads `index.ts` as source, and",
+		"compiling it would drag in the pi-tui and pi-coding-agent peer types,",
+		"which a consumer of the library has no reason to install."
+	],
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"noEmit": false,
+		"allowImportingTsExtensions": false,
+		"module": "nodenext",
+		"moduleResolution": "nodenext",
+		"declaration": true,
+		"declarationMap": true,
+		"sourceMap": true,
+		"outDir": "dist",
+		"rootDir": "src"
+	},
+	"include": ["src/core.ts"]
+}

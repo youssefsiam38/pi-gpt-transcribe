@@ -102,6 +102,55 @@ each `/transcribe`.
 Key resolution order: `apiKey` in the config file, then `$OPENAI_API_KEY`, then whatever
 Pi already holds for its own `openai` provider.
 
+## Using the core without a terminal
+
+`/transcribe` is a terminal front end over a small library. The library half —
+config, phrase segmentation, WAV framing, and the transcription request — needs
+nothing but Node, and it is importable on its own:
+
+```ts
+import {
+  loadConfig, resolveApiKey, transcribe, encodeWav, SAMPLE_RATE,
+  type DictationState,
+} from "pi-gpt-transcribe/core";
+
+const config = loadConfig();
+const apiKey = resolveApiKey(config);
+if (!apiKey) throw new Error(`Set ${config.apiKeyEnv} or "apiKey" in the config file.`);
+
+const text = await transcribe({
+  wav: encodeWav(pcm, SAMPLE_RATE),   // mono little-endian int16
+  apiKey,
+  baseUrl: config.baseUrl,
+  model: config.model,
+  prompt: config.prompt,
+  keywords: config.keywords,
+  languages: config.languages,
+});
+```
+
+`DictationPipeline` is exported too. It takes any object matching `MicStream`,
+so audio that arrives from somewhere other than a microphone — a browser, a
+socket, a file, a test — can be segmented by the same code that segments the
+terminal's.
+
+The point of the subpath is that there is one definition of each of these
+things. A second front end that re-derives the config format, the request
+shape, or the session state is a copy, and the copy drifts silently: the config
+file still parses, it just stops meaning what this package means by it.
+Importing the definitions turns a breaking change into a build error.
+
+`pi-gpt-transcribe/core` is public API and follows semver. The extension entry
+point is not — Pi loads it, nothing imports it.
+
+**Building.** `dist/` is committed because this package installs from git,
+where there is no publish step to build on. After changing anything under
+`src/`, run:
+
+```bash
+npm install && npm run build && npm run typecheck
+```
+
 ## Requirements
 
 - **An OpenAI platform API key.** Billed at $0.0045 per minute of audio.
