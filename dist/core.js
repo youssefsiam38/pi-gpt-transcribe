@@ -24,7 +24,7 @@
 export const PACKAGE_NAME = "pi-gpt-transcribe";
 /** Kept in step with `package.json`. Exported so a host can report which copy
  *  it loaded without reading the manifest. */
-export const PACKAGE_VERSION = "0.3.0";
+export const PACKAGE_VERSION = "0.3.1";
 // -------------------------------------------------------------- configuration
 // The config file is the contract between this package and whoever edits it.
 // One parse, one set of defaults, one place a new key is added.

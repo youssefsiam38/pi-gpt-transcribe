@@ -143,6 +143,12 @@ Importing the definitions turns a breaking change into a build error.
 `pi-gpt-transcribe/core` is public API and follows semver. The extension entry
 point is not — Pi loads it, nothing imports it.
 
+**Microphone capture is optional.** `decibri` carries prebuilt native audio
+bindings and nothing but `openMic` needs them, so it is an optional dependency.
+A normal install still gets it; a consumer of `/core` that already has audio can
+skip it, and a platform with no prebuild degrades to "no microphone" rather than
+a failed install. Calling `/transcribe` without it says exactly that.
+
 **Building.** `dist/` is committed because this package installs from git,
 where there is no publish step to build on. After changing anything under
 `src/`, run:

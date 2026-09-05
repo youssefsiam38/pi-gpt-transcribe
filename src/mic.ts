@@ -34,8 +34,36 @@ function resolveMicrophone(mod: unknown): DecibriModule["Microphone"] {
 	return microphone;
 }
 
+/**
+ * decibri is an optional dependency: it carries prebuilt native audio bindings
+ * for every platform, and nothing but this function needs them. It is installed
+ * by default, so a normal `pi install` is unaffected — but a consumer of
+ * `pi-gpt-transcribe/core` that already has audio can skip it, and an install
+ * on a platform with no prebuild degrades to "no microphone" instead of a
+ * failed install.
+ *
+ * The failure has to say so out loud. A bare ERR_MODULE_NOT_FOUND from a
+ * dynamic import tells the person nothing they can act on.
+ */
+async function loadDecibri(): Promise<unknown> {
+	try {
+		return await import("decibri");
+	} catch (error) {
+		const code = (error as { code?: unknown }).code;
+		if (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") {
+			throw new Error(
+				"Microphone capture needs the optional `decibri` package, which is not installed. " +
+					"Install it in the same place as pi-gpt-transcribe (`npm install decibri`), " +
+					"or reinstall this package without `--no-optional`.",
+				{ cause: error },
+			);
+		}
+		throw error;
+	}
+}
+
 export async function openMic(config: TranscribeConfig): Promise<MicStream> {
-	const microphone = resolveMicrophone(await import("decibri"));
+	const microphone = resolveMicrophone(await loadDecibri());
 	return microphone.open({
 		sampleRate: SAMPLE_RATE,
 		channels: 1,
