@@ -24,8 +24,8 @@
 export declare const PACKAGE_NAME = "pi-gpt-transcribe";
 /** Kept in step with `package.json`. Exported so a host can report which copy
  *  it loaded without reading the manifest. */
-export declare const PACKAGE_VERSION = "0.3.1";
-export { CONFIG_DIR, CONFIG_PATH, DEFAULT_API_KEY_ENV, DEFAULT_BASE_URL, DEFAULT_HOTKEY, DEFAULT_MAX_SEGMENT_SECONDS, DEFAULT_MIN_SEGMENT_SECONDS, DEFAULT_MODEL, DEFAULT_SILENCE_HOLDOFF_MS, DEFAULT_SPEECH_FLOOR, DEFAULT_VAD_THRESHOLD, loadConfig, resolveApiKey, type TranscribeConfig, } from "./config.js";
+export declare const PACKAGE_VERSION = "0.4.0";
+export { CONFIG_DIR, CONFIG_DIR_NAME, CONFIG_PATH, configDir, configPath, DEFAULT_API_KEY_ENV, DEFAULT_BASE_URL, DEFAULT_HOTKEY, DEFAULT_MAX_SEGMENT_SECONDS, DEFAULT_MIN_SEGMENT_SECONDS, DEFAULT_MODEL, DEFAULT_SILENCE_HOLDOFF_MS, DEFAULT_SPEECH_FLOOR, DEFAULT_VAD_THRESHOLD, loadConfig, resolveApiKey, type TranscribeConfig, } from "./config.js";
 export { transcribe, type TranscribeRequest, TranscriptionError } from "./openai.js";
 export { BYTES_PER_SAMPLE, FRAMES_PER_BUFFER, type MicStream, SAMPLE_RATE } from "./audio.js";
 export { encodeWav, rmsInt16 } from "./wav.js";

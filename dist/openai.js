@@ -20,6 +20,11 @@
  * uncatchable from the call site. A Buffer body skips that path entirely: it
  * is passed through as a plain source with no stream and no enqueue.
  *
+ * The container is the caller's choice. The endpoint decides how to decode
+ * from the part's filename and content type, so both are parameters rather
+ * than the constant `audio.wav` they used to be: a caller that already has
+ * Opus from a browser should not have to transcode it to send it.
+ *
  * `keywords` and `languages` are gpt-transcribe's context fields (the model
  * supersedes gpt-4o-transcribe, and `languages` replaces whisper's singular
  * `language`). Both are omitted unless configured, so the default request is
@@ -52,13 +57,25 @@ const CRLF = "\r\n";
 function sanitize(value) {
     return value.replace(/[\r\n]+/g, " ");
 }
+const DEFAULT_FILENAME = "audio.wav";
+const DEFAULT_CONTENT_TYPE = "audio/wav";
+/** `audio` is the field; `wav` is what it used to be called. Exactly one has
+ *  to be there, and saying which is missing beats a 400 from the API. */
+function audioOf(request) {
+    const audio = request.audio ?? request.wav;
+    if (audio === undefined)
+        throw new TypeError("transcribe() needs `audio` (a Uint8Array of encoded audio).");
+    return audio;
+}
 function buildMultipart(request) {
     const boundary = `----pi-gpt-transcribe-${randomBytes(16).toString("hex")}`;
     const parts = [];
     const field = (name, value) => {
         parts.push(Buffer.from(`--${boundary}${CRLF}Content-Disposition: form-data; name="${name}"${CRLF}${CRLF}${sanitize(value)}${CRLF}`));
     };
-    parts.push(Buffer.from(`--${boundary}${CRLF}Content-Disposition: form-data; name="file"; filename="audio.wav"${CRLF}Content-Type: audio/wav${CRLF}${CRLF}`), request.wav, Buffer.from(CRLF));
+    const filename = sanitize(request.filename ?? DEFAULT_FILENAME).replace(/"/g, "");
+    const contentType = sanitize(request.contentType ?? DEFAULT_CONTENT_TYPE);
+    parts.push(Buffer.from(`--${boundary}${CRLF}Content-Disposition: form-data; name="file"; filename="${filename}"${CRLF}Content-Type: ${contentType}${CRLF}${CRLF}`), Buffer.from(audioOf(request)), Buffer.from(CRLF));
     field("model", request.model);
     if (request.prompt)
         field("prompt", request.prompt);

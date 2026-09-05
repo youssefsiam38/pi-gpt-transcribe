@@ -24,11 +24,11 @@
 export const PACKAGE_NAME = "pi-gpt-transcribe";
 /** Kept in step with `package.json`. Exported so a host can report which copy
  *  it loaded without reading the manifest. */
-export const PACKAGE_VERSION = "0.3.1";
+export const PACKAGE_VERSION = "0.4.0";
 // -------------------------------------------------------------- configuration
 // The config file is the contract between this package and whoever edits it.
 // One parse, one set of defaults, one place a new key is added.
-export { CONFIG_DIR, CONFIG_PATH, DEFAULT_API_KEY_ENV, DEFAULT_BASE_URL, DEFAULT_HOTKEY, DEFAULT_MAX_SEGMENT_SECONDS, DEFAULT_MIN_SEGMENT_SECONDS, DEFAULT_MODEL, DEFAULT_SILENCE_HOLDOFF_MS, DEFAULT_SPEECH_FLOOR, DEFAULT_VAD_THRESHOLD, loadConfig, resolveApiKey, } from "./config.js";
+export { CONFIG_DIR, CONFIG_DIR_NAME, CONFIG_PATH, configDir, configPath, DEFAULT_API_KEY_ENV, DEFAULT_BASE_URL, DEFAULT_HOTKEY, DEFAULT_MAX_SEGMENT_SECONDS, DEFAULT_MIN_SEGMENT_SECONDS, DEFAULT_MODEL, DEFAULT_SILENCE_HOLDOFF_MS, DEFAULT_SPEECH_FLOOR, DEFAULT_VAD_THRESHOLD, loadConfig, resolveApiKey, } from "./config.js";
 // ------------------------------------------------------------------ the request
 // The one network call, with its retry policy and its error type.
 export { transcribe, TranscriptionError } from "./openai.js";

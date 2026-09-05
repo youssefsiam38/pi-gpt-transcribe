@@ -119,7 +119,7 @@ const apiKey = resolveApiKey(config);
 if (!apiKey) throw new Error(`Set ${config.apiKeyEnv} or "apiKey" in the config file.`);
 
 const text = await transcribe({
-  wav: encodeWav(pcm, SAMPLE_RATE),   // mono little-endian int16
+  audio: encodeWav(pcm, SAMPLE_RATE),   // mono little-endian int16
   apiKey,
   baseUrl: config.baseUrl,
   model: config.model,
@@ -128,6 +128,19 @@ const text = await transcribe({
   languages: config.languages,
 });
 ```
+
+The container is yours to choose. `audio` takes anything the endpoint accepts
+and `filename` / `contentType` say what it is, so audio that arrives already
+encoded — Opus from a browser, an m4a on disk — is sent as it is rather than
+transcoded to WAV first:
+
+```ts
+await transcribe({ audio, filename: "speech.webm", contentType: "audio/webm", apiKey, ... });
+```
+
+`loadConfig`, `configPath` and `resolveApiKey` each take an optional
+environment, so a host with its own `XDG_CONFIG_HOME` — or a test that must not
+depend on the machine it runs on — can ask without mutating `process.env`.
 
 `DictationPipeline` is exported too. It takes any object matching `MicStream`,
 so audio that arrives from somewhere other than a microphone — a browser, a

@@ -20,13 +20,32 @@
  * uncatchable from the call site. A Buffer body skips that path entirely: it
  * is passed through as a plain source with no stream and no enqueue.
  *
+ * The container is the caller's choice. The endpoint decides how to decode
+ * from the part's filename and content type, so both are parameters rather
+ * than the constant `audio.wav` they used to be: a caller that already has
+ * Opus from a browser should not have to transcode it to send it.
+ *
  * `keywords` and `languages` are gpt-transcribe's context fields (the model
  * supersedes gpt-4o-transcribe, and `languages` replaces whisper's singular
  * `language`). Both are omitted unless configured, so the default request is
  * the two required fields and nothing else.
  */
 export interface TranscribeRequest {
-    readonly wav: Buffer;
+    /**
+     * The audio payload, in any container the endpoint accepts — wav, mp3, m4a,
+     * webm, ogg, flac. Give {@link filename} and {@link contentType} to match;
+     * they default to WAV, which is what {@link encodeWav} produces.
+     */
+    readonly audio?: Uint8Array;
+    /** @deprecated Use {@link audio}. Kept so 0.3 callers keep working. */
+    readonly wav?: Buffer;
+    /**
+     * Sent as the part filename. The endpoint decides how to decode from the
+     * extension, so it has to match the bytes: `speech.webm` for Opus in WebM.
+     */
+    readonly filename?: string | undefined;
+    /** MIME type of {@link audio}. Defaults to `audio/wav`. */
+    readonly contentType?: string | undefined;
     readonly apiKey: string;
     readonly baseUrl: string;
     readonly model: string;

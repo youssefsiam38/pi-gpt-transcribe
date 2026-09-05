@@ -283,7 +283,7 @@ export class DictationPipeline {
             await this.acquire();
             try {
                 const text = await transcribe({
-                    wav: encodeWav(pcm, SAMPLE_RATE),
+                    audio: encodeWav(pcm, SAMPLE_RATE),
                     apiKey: this.apiKey,
                     baseUrl: this.config.baseUrl,
                     model: this.config.model,

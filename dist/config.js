@@ -12,7 +12,24 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-export const CONFIG_DIR = join(process.env.XDG_CONFIG_HOME?.trim() || join(homedir(), ".config"), "pi-gpt-transcribe");
+/** Directory name under the XDG config root. */
+export const CONFIG_DIR_NAME = "pi-gpt-transcribe";
+/**
+ * Where the config file lives for a given environment.
+ *
+ * Takes the environment rather than reading `process.env` so a host that runs
+ * with its own `XDG_CONFIG_HOME` — or a test that must not depend on the
+ * machine it runs on — can ask where the file would be without mutating the
+ * process. `CONFIG_DIR` and `CONFIG_PATH` are this function applied to the
+ * environment at load, which is what every direct user of them wants.
+ */
+export function configDir(env = process.env) {
+    return join(env.XDG_CONFIG_HOME?.trim() || join(homedir(), ".config"), CONFIG_DIR_NAME);
+}
+export function configPath(env = process.env) {
+    return join(configDir(env), "config.json");
+}
+export const CONFIG_DIR = configDir();
 export const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 export const DEFAULT_MODEL = "gpt-transcribe";
 export const DEFAULT_BASE_URL = "https://api.openai.com/v1";
@@ -66,11 +83,12 @@ function num(value, fallback, min, max) {
         return fallback;
     return Math.min(Math.max(value, min), max);
 }
-function readRaw() {
+function readRaw(env) {
     try {
-        if (!existsSync(CONFIG_PATH))
+        const path = configPath(env);
+        if (!existsSync(path))
             return {};
-        const parsed = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+        const parsed = JSON.parse(readFileSync(path, "utf8"));
         return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
             ? parsed
             : {};
@@ -82,8 +100,8 @@ function readRaw() {
         return {};
     }
 }
-export function loadConfig() {
-    const raw = readRaw();
+export function loadConfig(env = process.env) {
+    const raw = readRaw(env);
     const hotkeyRaw = raw.hotkey === undefined ? DEFAULT_HOTKEY : str(raw.hotkey);
     return {
         model: str(raw.model) ?? DEFAULT_MODEL,
@@ -103,7 +121,7 @@ export function loadConfig() {
     };
 }
 /** The key actually used for requests, or undefined when nothing is set. */
-export function resolveApiKey(config) {
-    return config.apiKey ?? str(process.env[config.apiKeyEnv]);
+export function resolveApiKey(config, env = process.env) {
+    return config.apiKey ?? str(env[config.apiKeyEnv]);
 }
 //# sourceMappingURL=config.js.map

@@ -9,6 +9,19 @@
  * resolves to defaults rather than throwing, because the alternative is an
  * extension that fails to load and takes its `/transcribe` command with it.
  */
+/** Directory name under the XDG config root. */
+export declare const CONFIG_DIR_NAME = "pi-gpt-transcribe";
+/**
+ * Where the config file lives for a given environment.
+ *
+ * Takes the environment rather than reading `process.env` so a host that runs
+ * with its own `XDG_CONFIG_HOME` — or a test that must not depend on the
+ * machine it runs on — can ask where the file would be without mutating the
+ * process. `CONFIG_DIR` and `CONFIG_PATH` are this function applied to the
+ * environment at load, which is what every direct user of them wants.
+ */
+export declare function configDir(env?: NodeJS.ProcessEnv): string;
+export declare function configPath(env?: NodeJS.ProcessEnv): string;
 export declare const CONFIG_DIR: string;
 export declare const CONFIG_PATH: string;
 export declare const DEFAULT_MODEL = "gpt-transcribe";
@@ -72,7 +85,7 @@ export interface TranscribeConfig {
     /** Write a decision trace to `debug.log`. */
     readonly debug: boolean;
 }
-export declare function loadConfig(): TranscribeConfig;
+export declare function loadConfig(env?: NodeJS.ProcessEnv): TranscribeConfig;
 /** The key actually used for requests, or undefined when nothing is set. */
-export declare function resolveApiKey(config: TranscribeConfig): string | undefined;
+export declare function resolveApiKey(config: TranscribeConfig, env?: NodeJS.ProcessEnv): string | undefined;
 //# sourceMappingURL=config.d.ts.map

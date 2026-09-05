@@ -14,10 +14,27 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export const CONFIG_DIR = join(
-	process.env.XDG_CONFIG_HOME?.trim() || join(homedir(), ".config"),
-	"pi-gpt-transcribe",
-);
+/** Directory name under the XDG config root. */
+export const CONFIG_DIR_NAME = "pi-gpt-transcribe";
+
+/**
+ * Where the config file lives for a given environment.
+ *
+ * Takes the environment rather than reading `process.env` so a host that runs
+ * with its own `XDG_CONFIG_HOME` — or a test that must not depend on the
+ * machine it runs on — can ask where the file would be without mutating the
+ * process. `CONFIG_DIR` and `CONFIG_PATH` are this function applied to the
+ * environment at load, which is what every direct user of them wants.
+ */
+export function configDir(env: NodeJS.ProcessEnv = process.env): string {
+	return join(env.XDG_CONFIG_HOME?.trim() || join(homedir(), ".config"), CONFIG_DIR_NAME);
+}
+
+export function configPath(env: NodeJS.ProcessEnv = process.env): string {
+	return join(configDir(env), "config.json");
+}
+
+export const CONFIG_DIR = configDir();
 export const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 
 export const DEFAULT_MODEL = "gpt-transcribe";
@@ -107,10 +124,11 @@ function num(value: unknown, fallback: number, min: number, max: number): number
 	return Math.min(Math.max(value, min), max);
 }
 
-function readRaw(): Record<string, unknown> {
+function readRaw(env: NodeJS.ProcessEnv): Record<string, unknown> {
 	try {
-		if (!existsSync(CONFIG_PATH)) return {};
-		const parsed: unknown = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+		const path = configPath(env);
+		if (!existsSync(path)) return {};
+		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
 		return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
 			? (parsed as Record<string, unknown>)
 			: {};
@@ -122,8 +140,8 @@ function readRaw(): Record<string, unknown> {
 	}
 }
 
-export function loadConfig(): TranscribeConfig {
-	const raw = readRaw();
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): TranscribeConfig {
+	const raw = readRaw(env);
 	const hotkeyRaw = raw.hotkey === undefined ? DEFAULT_HOTKEY : str(raw.hotkey);
 	return {
 		model: str(raw.model) ?? DEFAULT_MODEL,
@@ -144,6 +162,9 @@ export function loadConfig(): TranscribeConfig {
 }
 
 /** The key actually used for requests, or undefined when nothing is set. */
-export function resolveApiKey(config: TranscribeConfig): string | undefined {
-	return config.apiKey ?? str(process.env[config.apiKeyEnv]);
+export function resolveApiKey(
+	config: TranscribeConfig,
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return config.apiKey ?? str(env[config.apiKeyEnv]);
 }
